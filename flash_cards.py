@@ -1,5 +1,5 @@
 import os
-import sqlite3
+import pymysql.cursors
 from flask import Flask, request, session, g, redirect, url_for, abort, \
     render_template, flash
 
@@ -8,52 +8,33 @@ app.config.from_object(__name__)
 
 # Load default config and override config from an environment variable
 app.config.update(dict(
-    DATABASE=os.path.join(app.root_path, 'db', 'cards.db'),
     SECRET_KEY='development key',
     USERNAME='admin',
     PASSWORD='default'
 ))
-app.config.from_envvar('CARDS_SETTINGS', silent=True)
-
+app.config.from_object("config.Config")
 
 def connect_db():
-    rv = sqlite3.connect(app.config['DATABASE'])
-    rv.row_factory = sqlite3.Row
+    rv = pymysql.connect(host=app.config["DB_HOST"], user=app.config["DB_USER"], password=app.config["DB_PASSWORD"], db=app.config["DB_NAME"])
     return rv
-
-
-def init_db():
-    db = get_db()
-    with app.open_resource('data/schema.sql', mode='r') as f:
-        db.cursor().executescript(f.read())
-    db.commit()
-
 
 def get_db():
     """Opens a new database connection if there is none yet for the
     current application context.
     """
-    if not hasattr(g, 'sqlite_db'):
-        g.sqlite_db = connect_db()
-    return g.sqlite_db
+    if not hasattr(g, 'mysql_db'):
+        g.mysql_db = connect_db()
+    return g.mysql_db
 
 
 @app.teardown_appcontext
 def close_db(error):
     """Closes the database again at the end of the request."""
     if hasattr(g, 'sqlite_db'):
-        g.sqlite_db.close()
+        g.mysql_db.close()
 
 
 # -----------------------------------------------------------
-
-# Uncomment and use this to initialize database, then comment it
-#   You can rerun it to pave the database and start over
-# @app.route('/initdb')
-# def initdb():
-#     init_db()
-#     return 'Initialized the database.'
-
 
 @app.route('/')
 def index():
@@ -68,13 +49,14 @@ def cards():
     if not session.get('logged_in'):
         return redirect(url_for('login'))
     db = get_db()
-    query = '''
-        SELECT id, type, front, back, known
-        FROM cards
-        ORDER BY id DESC
-    '''
-    cur = db.execute(query)
-    cards = cur.fetchall()
+    with db.cursor(pymysql.cursors.DictCursor) as cur:
+        query = '''
+            SELECT id, type, front, back, known
+            FROM cards
+            ORDER BY id DESC
+        '''
+        cur.execute(query)
+        cards = cur.fetchall()
     return render_template('cards.html', cards=cards, filter_name="all")
 
 
@@ -97,9 +79,10 @@ def filter_cards(filter_name):
         return redirect(url_for('cards'))
 
     db = get_db()
-    fullquery = "SELECT id, type, front, back, known FROM cards " + query + " ORDER BY id DESC"
-    cur = db.execute(fullquery)
-    cards = cur.fetchall()
+    with db.cursor(pymysql.cursors.DictCursor) as cur:
+        full_query = "SELECT id, type, front, back, known FROM cards " + query + " ORDER BY id DESC"
+        cur.execute(full_query)
+        cards = cur.fetchall()
     return render_template('cards.html', cards=cards, filter_name=filter_name)
 
 
@@ -108,11 +91,12 @@ def add_card():
     if not session.get('logged_in'):
         return redirect(url_for('login'))
     db = get_db()
-    db.execute('INSERT INTO cards (type, front, back) VALUES (?, ?, ?)',
-               [request.form['type'],
-                request.form['front'],
-                request.form['back']
-                ])
+    with db.cursor(pymysql.cursors.DictCursor) as cur:
+        cur.execute('INSERT INTO cards (type, front, back) VALUES (%s, %s, %s)',
+            (request.form['type'],
+            request.form['front'],
+            request.form['back']
+            ))
     db.commit()
     flash('New card was successfully added.')
     return redirect(url_for('cards'))
@@ -123,13 +107,14 @@ def edit(card_id):
     if not session.get('logged_in'):
         return redirect(url_for('login'))
     db = get_db()
-    query = '''
-        SELECT id, type, front, back, known
-        FROM cards
-        WHERE id = ?
-    '''
-    cur = db.execute(query, [card_id])
-    card = cur.fetchone()
+    with db.cursor(pymysql.cursors.DictCursor) as cur:
+        query = '''
+            SELECT id, type, front, back, known
+            FROM cards
+            WHERE id = %s
+        '''
+        cur.execute(query, (int(card_id),))
+        card = cur.fetchone()
     return render_template('edit.html', card=card)
 
 
@@ -140,25 +125,27 @@ def edit_card():
     selected = request.form.getlist('known')
     known = bool(selected)
     db = get_db()
-    command = '''
-        UPDATE cards
-        SET
-          type = ?,
-          front = ?,
-          back = ?,
-          known = ?
-        WHERE id = ?
-    '''
-    db.execute(command,
+
+    with db.cursor(pymysql.cursors.DictCursor) as cur:
+        command = '''
+            UPDATE cards
+            SET
+            type = %s,
+            front = %s,
+            back = %s,
+            known = %s
+            WHERE id = %s
+        '''
+        cur.execute(command,
                [request.form['type'],
                 request.form['front'],
                 request.form['back'],
                 known,
                 request.form['card_id']
                 ])
-    db.commit()
-    flash('Card saved.')
-    return redirect(url_for('cards'))
+        db.commit()
+        flash('Card saved.')
+        return redirect(url_for('cards'))
 
 
 @app.route('/delete/<card_id>')
@@ -166,10 +153,11 @@ def delete(card_id):
     if not session.get('logged_in'):
         return redirect(url_for('login'))
     db = get_db()
-    db.execute('DELETE FROM cards WHERE id = ?', [card_id])
-    db.commit()
-    flash('Card deleted.')
-    return redirect(url_for('cards'))
+    with db.cursor(pymysql.cursors.DictCursor) as cur:
+        cur.execute('DELETE FROM cards WHERE id = %s', (int(card_id),))
+        db.commit()
+        flash('Card deleted.')
+        return redirect(url_for('cards'))
 
 
 @app.route('/general')
@@ -212,36 +200,35 @@ def memorize(card_type, card_id):
 
 def get_card(type):
     db = get_db()
-
-    query = '''
-      SELECT
-        id, type, front, back, known
-      FROM cards
-      WHERE
-        type = ?
-        and known = 0
-      ORDER BY RANDOM()
-      LIMIT 1
-    '''
-
-    cur = db.execute(query, [type])
-    return cur.fetchone()
+    with db.cursor(pymysql.cursors.DictCursor) as cur:
+        query = '''
+        SELECT
+            id, type, front, back, known
+          FROM cards
+          WHERE
+            type = %s
+            and known = 0
+          ORDER BY RAND()
+          LIMIT 1
+        '''
+        cur.execute(query, (type,))
+        return cur.fetchone()
 
 
 def get_card_by_id(card_id):
     db = get_db()
+    with db.cursor(pymysql.cursors.DictCursor) as cur:
+        query = '''
+          SELECT
+            id, type, front, back, known
+          FROM cards
+          WHERE
+            id = %s
+          LIMIT 1
+        '''
 
-    query = '''
-      SELECT
-        id, type, front, back, known
-      FROM cards
-      WHERE
-        id = ?
-      LIMIT 1
-    '''
-
-    cur = db.execute(query, [card_id])
-    return cur.fetchone()
+        cur.execute(query, (int(card_id),))
+        return cur.fetchone()
 
 
 @app.route('/mark_known/<card_id>/<card_type>')
@@ -249,10 +236,11 @@ def mark_known(card_id, card_type):
     if not session.get('logged_in'):
         return redirect(url_for('login'))
     db = get_db()
-    db.execute('UPDATE cards SET known = 1 WHERE id = ?', [card_id])
-    db.commit()
-    flash('Card marked as known.')
-    return redirect(url_for(card_type))
+    with db.cursor(pymysql.cursors.DictCursor) as cur:
+        cur.execute('UPDATE cards SET known = 1 WHERE id = %s', (int(card_id),))
+        db.commit()
+        flash('Card marked as known.')
+        return redirect(url_for(card_type))
 
 
 @app.route('/login', methods=['GET', 'POST'])

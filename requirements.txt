@@ -1,2 +1,2 @@
-gunicorn==19.6.0
 Flask==0.12
+PyMySql==0.7.9
