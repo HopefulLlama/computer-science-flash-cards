@@ -1,0 +1,8 @@
+{
+  "name": "Computer Science Flash Cards",
+  "description": "That almost-Google guy's learning thing.",
+  "image": "heroku/python",
+  "repository": "https://github.com/HopefulLlama/computer-science-flash-cards",
+  "keywords": ["python"],
+  "addons": []
+}
